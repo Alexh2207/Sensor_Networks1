@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 
@@ -28,6 +29,7 @@
 #include "trace_helper.h"
 #include "lora_radio_helper.h"
 #include "GPS_funcion.h"
+#include "humidity_and_temp/si7021_control.h"
 
 using namespace events;
 using namespace std::chrono_literals;
@@ -101,6 +103,13 @@ static uint8_t APP_EUI[] = {0x70, 0xb3, 0xd5, 0x7e, 0xd0, 0x00, 0xfc, 0x4d};
 static uint8_t APP_KEY[] = {0xf3, 0x1c, 0x2e, 0x8b, 0xc6, 0x71, 0x28, 0x1d,
                             0x51, 0x16, 0xf0, 0x8f, 0xf0, 0xb7, 0x92, 0x8f};
 
+DigitalOut Led_red(PH_0);
+DigitalOut Led_green(PH_1);
+DigitalOut Led_blue(PB_13);
+I2C i2c_driver(PB_9, PB_8);
+AnalogIn Soil(PA_0);
+si7021_control si7021_sensor(0x80);
+
 /**
  * Entry point for application
  */
@@ -113,6 +122,8 @@ int main(void)
     printf("\r\n Configuring GPS...");
 
     configureGPSToGPGGAyGPRMC();
+
+    si7021_sensor.write_user_reg(0);
 
     printf("\r\n DEV_EUI: ");
     for (int i = 0; i < sizeof(DEV_EUI); ++i) printf("%02x", DEV_EUI[i]);
@@ -199,7 +210,9 @@ static void send_message()
       gpsData = read_data();
     }
 
-    uint16_t packet_len;
+    RHT_data humid_meas = si7021_sensor.data_meas();
+    uint16_t soil_moisture = Soil.read_u16();
+
     int16_t retcode;
     int32_t sensor_value;
 
@@ -215,8 +228,37 @@ static void send_message()
 
     printf("\r\n Latitude Value is %s, Longitude Value is %s", gpsData.latitude, gpsData.longitude);
 
-    packet_len = snprintf((char *) tx_buffer, sizeof(tx_buffer),
-                          "Latitude Value is -10");
+    float latitude = std::atof(gpsData.latitude);
+    float longitude = std::atof(gpsData.longitude);
+
+    //packet_len = snprintf((char *) tx_buffer, sizeof(tx_buffer), "Latitude Value is -10");
+    size_t packet_len = 0;
+    if(latitude == 0.0 && longitude == 0.0){
+        latitude = -4.3;
+        longitude = 50.0;
+    }
+
+    printf("\r\n Latitude Value is %f, Longitude Value is %f, Temperature value is %f, Humidity Value is %f, Soil value is %d", latitude, longitude, humid_meas.temp, humid_meas.humid, soil_moisture);
+
+    tx_buffer[packet_len++] = 0xFF;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &latitude)) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &latitude) >> 8) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &latitude) >> 16) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &latitude) >> 24) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &longitude)) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &longitude) >> 8) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &longitude) >> 16) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &longitude) >> 24) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &humid_meas.temp)) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &humid_meas.temp) >> 8) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &humid_meas.temp) >> 16) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &humid_meas.temp) >> 24) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &humid_meas.humid)) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &humid_meas.humid) >> 8) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &humid_meas.humid) >> 16) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &humid_meas.humid) >> 24) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &soil_moisture)) & 0xff;
+    tx_buffer[packet_len++] = ((*(uint32_t *) &soil_moisture) >> 8) & 0xff;
 
     retcode = lorawan.send(MBED_CONF_LORA_APP_PORT, tx_buffer, packet_len,
                            MSG_UNCONFIRMED_FLAG);
@@ -262,11 +304,17 @@ static void receive_message()
     //OFF : 4f 46 46, Red: 52 65 64, Green: 47 72 65 65 6e 
     //OFF
     if(rx_buffer[0] == 0x4f && rx_buffer[1] == 0x46 && rx_buffer[2] == 0x46){
-
+        Led_red = 1;
+        Led_blue = 1;
+        Led_green = 1;
     }else if (rx_buffer[0] == 0x52 && rx_buffer[1] == 0x65 && rx_buffer[2] == 0x64) {
-    
+        Led_red = 0;
+        Led_blue = 1;
+        Led_green = 1;
     }else if (rx_buffer[0] == 0x47 && rx_buffer[1] == 0x72 && rx_buffer[2] == 0x65 && rx_buffer[3] == 0x65 && rx_buffer[4] == 0x6e) {
-
+        Led_red = 1;
+        Led_blue = 1;
+        Led_green = 0;
     }
 
     memset(rx_buffer, 0, sizeof(rx_buffer));
